@@ -1,0 +1,21 @@
+services:
+  "server":
+    build: 
+      context: ./server
+      dockerfile: Dockerfile
+    develop:
+      watch:
+        - action: sync
+          path: ./server
+          target: /app
+    ports:
+      - "8080:8080"
+  client:
+    build: 
+      context: ./client
+      dockerfile: Dockerfile
+    develop:
+      watch:
+        - action: sync
+          path: ./client
+          target: /app
