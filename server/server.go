@@ -2,124 +2,92 @@ package main
 
 import (
 	"log"
-	"text/template"
+    "sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
 
+type User struct {
+    Name string
+    Conn *websocket.Conn
+}
+
+type Room struct {
+    Name string
+    Users map[*User]bool
+    Messages chan []byte
+    mu sync.Mutex
+}
+
+// type Message struct {
+//     Data string
+//     user User
+// }
+
 var upgrader = websocket.Upgrader{}
 
-func echo(c *gin.Context) {
-	w,r := c.Writer, c.Request
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Println("Upgrader", err)
-		return
-	}
-	defer conn.Close()
+var room = Room{
+    Name: "chat",
+    Users: make(map[*User]bool),
+    Messages: make(chan []byte),
+}
 
-	for {
-		mt, message, err := conn.ReadMessage()
-		if err != nil {
-			log.Println("ReadMessage", err)
-			return
-		}
+func handleChat(c *gin.Context) {
+    conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+    if err != nil {
+        log.Fatalln(err.Error())
+        return
+    }
 
-		log.Printf("reveive: %s", message)
+    user := &User{
+        Name: "andrey",
+        Conn: conn,
+    }
 
-		err = conn.WriteMessage(mt, message)
-		if err != nil {
-			log.Println("WriteMessage", err)
-			return
-		}
-	}
+    room.mu.Lock()
+    room.Users[user] = true
+    room.mu.Unlock()
+
+    go func() {
+        defer func(conn *websocket.Conn) {
+			room.mu.Lock()
+			delete(room.Users, user) 
+			room.mu.Unlock()
+			conn.Close()
+			log.Printf("Пользователь %s отключился\n", user.Name)
+		}(conn)
+
+        for {
+            t, message, err := conn.ReadMessage()
+            if err != nil {
+                log.Fatal(err.Error())
+                break
+            }
+            log.Printf("Message: %s", string(message))
+            log.Println(room.Users)
+            for user := range room.Users {
+                err = user.Conn.WriteMessage(t, message)
+                if err != nil {
+                    log.Fatal(err.Error())
+                    break
+                }
+            }
+        }
+     }()
 }
 
 func home(c *gin.Context) {
-	homeTemplate.Execute(c.Writer, "ws://"+c.Request.Host+"/echo")
+    c.HTML(200, "index.html", gin.H{"title": "main page"})
 }
 
 func main() {
-	router := gin.Default()
+    router := gin.Default()
 
-	router.GET("/echo", echo)
-	router.GET("/", home)
+    router.LoadHTMLGlob("front/html/*")
 
-	router.Run()
+    router.GET("/", home)
+    router.GET("/chat", handleChat)
+
+    router.Run()
 }
-
-
-var homeTemplate = template.Must(template.New("").Parse(`
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<script>  
-window.addEventListener("load", function(evt) {
-    var output = document.getElementById("output");
-    var input = document.getElementById("input");
-    var ws;
-    var print = function(message) {
-        var d = document.createElement("div");
-        d.textContent = message;
-        output.appendChild(d);
-        output.scroll(0, output.scrollHeight);
-    };
-    document.getElementById("open").onclick = function(evt) {
-        if (ws) {
-            return false;
-        }
-        ws = new WebSocket("{{.}}");
-        ws.onopen = function(evt) {
-            print("OPEN");
-        }
-        ws.onclose = function(evt) {
-            print("CLOSE");
-            ws = null;
-        }
-        ws.onmessage = function(evt) {
-            print("RESPONSE: " + evt.data);
-        }
-        ws.onerror = function(evt) {
-            print("ERROR: " + evt.data);
-        }
-        return false;
-    };
-    document.getElementById("send").onclick = function(evt) {
-        if (!ws) {
-            return false;
-        }
-        print("SEND: " + input.value);
-        ws.send(input.value);
-        return false;
-    };
-    document.getElementById("close").onclick = function(evt) {
-        if (!ws) {
-            return false;
-        }
-        ws.close();
-        return false;
-    };
-});
-</script>
-</head>
-<body>
-<table>
-<tr><td valign="top" width="50%">
-<p>Click "Open" to create a connection to the server, 
-"Send" to send a message to the server and "Close" to close the connection. 
-You can change the message and send multiple times.
-<p>
-<form>
-<button id="open">Open</button>
-<button id="close">Close</button>
-<p><input id="input" type="text" value="Hello world!">
-<button id="send">Send</button>
-</form>
-</td><td valign="top" width="50%">
-<div id="output" style="max-height: 70vh;overflow-y: scroll;"></div>
-</td></tr></table>
-</body>
-</html>
-`))
